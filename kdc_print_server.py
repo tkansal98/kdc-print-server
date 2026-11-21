@@ -259,6 +259,12 @@ def render_film(film, cfg, film_no=1, page_mm=None):
     orient = cfg["printer"].get("orientation", "auto").lower()
     if orient == "auto":
         orient = str(film["attrs"].get("FilmOrientation", "PORTRAIT")).lower()
+        # A single wide image (e.g. an X-ray taken landscape) fills the sheet
+        # better on a landscape page, whatever the console asked for.
+        imgs = [b["image"] for b in film["boxes"] if b.get("image") is not None]
+        if len(film["boxes"]) == 1 and len(imgs) == 1:
+            w, h = imgs[0].size
+            orient = "landscape" if w > h * 1.05 else ("portrait" if h > w * 1.05 else orient)
     landscape = orient.startswith("land")
     if landscape:
         pw_mm, ph_mm = ph_mm, pw_mm
