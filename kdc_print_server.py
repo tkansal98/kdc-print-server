@@ -44,7 +44,9 @@ VERSION = "1.2"
 # Paper sizes in mm (portrait) and the matching Windows DMPAPER_* code.
 # None = no standard Windows code; sent to the driver as a custom (user-defined) size.
 PAPERS = {
-    "13X17": ((330.2, 431.8), None),
+    # 13 in is 330.2 mm, but the Epson L18050 accepts at most 329 mm width (A3+),
+    # and silently falls back to A4 width if asked for more.
+    "13X17": ((329.0, 431.8), None),
     "14X17": ((355.6, 431.8), None),
     "A3": ((297.0, 420.0), 8),
     "A4": ((210.0, 297.0), 9),
@@ -387,7 +389,7 @@ def print_windows(film, cfg, copies, jobname, film_no):
         area_w, area_h = pw / dpx * 25.4, ph / dpy * 25.4
         log.info("Driver page: %.0f x %.0f mm (printable %.0f x %.0f mm), wanted %s %.0f x %.0f mm",
                  phys_w, phys_h, area_w, area_h, paper, w_mm, h_mm)
-        if abs(min(phys_w, phys_h) - w_mm) > 5 or abs(max(phys_w, phys_h) - h_mm) > 5:
+        if abs(min(phys_w, phys_h) - w_mm) > 8 or abs(max(phys_w, phys_h) - h_mm) > 5:
             log.warning("The Epson driver gave a different paper size than %s. Load that size "
                         "or select it in Printing Preferences; printing to fill the driver's page.",
                         paper)

@@ -19,7 +19,7 @@ The download contains `KDCPrintServer.exe`, `TestPrint.exe`, `config.ini`,
 
 1. Install the Epson L18050 driver and print a Windows test page.
    In the printer's preferences (Printing Preferences > Paper Size > **User-Defined**),
-   create a size called `13x17` (width 330.2 mm, height 431.8 mm), save it and set it as default.
+   create a size called `13x17` (width **329** mm, height 431.8 mm; the Epson's maximum width is 329 mm), save it and set it as default.
    Also choose your paper type (glossy/photo or film paper) with **High** quality.
    The server prints on 13x17 sheets by default; change `paper` in config.ini for A3 or other sizes.
 2. Give the PC a **fixed IP address** on the same network as the CT, e.g. `192.168.1.50`.
