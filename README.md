@@ -10,7 +10,7 @@ No Python is needed on the print PC. GitHub builds a ready-to-run `.exe`.
 
 - **Latest build:** open the repo on GitHub > **Actions** > latest "Build Windows exe" run > download
   **KDC-DICOM-Print-Server-windows** under *Artifacts*.
-- **Release:** push a tag such as `v1.0`, and a zip appears under **Releases**.
+- **Release:** every push to `main` publishes a new release. Download `KDC-DICOM-Print-Server-windows.zip` from **Releases** on the repo page.
 
 The download contains `KDCPrintServer.exe`, `TestPrint.exe`, `config.ini`,
 `install.bat`, `restart.bat`, `uninstall.bat` and this README.

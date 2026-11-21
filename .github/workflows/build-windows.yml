@@ -56,8 +56,15 @@ jobs:
           name: KDC-DICOM-Print-Server-windows
           path: KDC-DICOM-Print-Server/
 
-      - name: Publish release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish release
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          name: KDC DICOM Print Server ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            Download **KDC-DICOM-Print-Server-windows.zip**, unzip to e.g. C:\KDC-Print,
+            set the printer name in config.ini, run install.bat as administrator, then TestPrint.exe.
           files: KDC-DICOM-Print-Server-windows.zip
