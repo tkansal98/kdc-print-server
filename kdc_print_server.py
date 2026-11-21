@@ -322,21 +322,26 @@ def _user_devmode(win32print, h):
     return None, 0
 
 
-def _ensure_form(win32print, form_name, w_mm, h_mm):
-    """Create a Windows paper form (e.g. '13x17') if it doesn't exist yet."""
+def _ensure_form(win32print, h, form_name, w_mm, h_mm):
+    """Create (or correct) a Windows paper form such as '13x17'."""
+    w, hgt = int(w_mm * 1000), int(h_mm * 1000)  # thousandths of a mm
+    form = {"Flags": 0, "Name": form_name, "Size": {"cx": w, "cy": hgt},
+            "ImageableArea": {"left": 0, "top": 0, "right": w, "bottom": hgt}}
     try:
-        if any(f["Name"].lower() == form_name.lower() for f in win32print.EnumForms(None)):
-            return True
-        w, hgt = int(w_mm * 1000), int(h_mm * 1000)  # thousandths of a mm
-        win32print.AddForm(None, 1, {
-            "Flags": 0, "Name": form_name, "Size": {"cx": w, "cy": hgt},
-            "ImageableArea": {"left": 0, "top": 0, "right": w, "bottom": hgt},
-        })
+        for f in win32print.EnumForms(h):
+            if f["Name"].lower() == form_name.lower():
+                size = f.get("Size", {})
+                if abs(size.get("cx", 0) - w) > 500 or abs(size.get("cy", 0) - hgt) > 500:
+                    form["Name"] = f["Name"]
+                    win32print.SetForm(h, f["Name"], form)
+                    log.info("Corrected Windows paper form '%s' to %.1f x %.1f mm", f["Name"], w_mm, h_mm)
+                return f["Name"]
+        win32print.AddForm(h, form)
         log.info("Created Windows paper form '%s' (%.1f x %.1f mm)", form_name, w_mm, h_mm)
-        return True
+        return form_name
     except Exception as e:
-        log.warning("Could not create paper form '%s': %s", form_name, e)
-        return False
+        log.warning("Could not create/update paper form '%s': %s", form_name, e)
+        return None
 
 
 def print_windows(film, cfg, copies, jobname, film_no):
@@ -363,7 +368,8 @@ def print_windows(film, cfg, copies, jobname, film_no):
                 devmode.Fields |= win32con.DM_PAPERSIZE
             else:
                 form = f"{paper.lower()}" if paper != "CUSTOM" else f"{w_mm:.0f}x{h_mm:.0f}mm"
-                if _ensure_form(win32print, form, w_mm, h_mm):
+                form = _ensure_form(win32print, h, form, w_mm, h_mm)
+                if form:
                     devmode.FormName = form
                     devmode.Fields |= win32con.DM_FORMNAME
                 devmode.PaperSize = 256  # DMPAPER_USER
