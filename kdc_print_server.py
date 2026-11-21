@@ -39,10 +39,13 @@ from pynetdicom.sop_class import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-VERSION = "1.0"
+VERSION = "1.1"
 
-# Paper sizes in mm (portrait) and the matching Windows DMPAPER_* code
+# Paper sizes in mm (portrait) and the matching Windows DMPAPER_* code.
+# None = no standard Windows code; sent to the driver as a custom (user-defined) size.
 PAPERS = {
+    "13X17": ((330.2, 431.8), None),
+    "14X17": ((355.6, 431.8), None),
     "A3": ((297.0, 420.0), 8),
     "A4": ((210.0, 297.0), 9),
     "A3+": ((329.0, 483.0), 8),       # printer driver may expose this as a custom size
@@ -64,7 +67,10 @@ require_called_ae = no
 
 [printer]
 name =
-paper = A3
+paper = 13X17
+paper_width_mm =
+paper_height_mm =
+set_paper_size = yes
 orientation = auto
 auto_print = yes
 max_copies = 5
@@ -197,11 +203,29 @@ def _font(size):
     return ImageFont.load_default()
 
 
+def paper_size(cfg):
+    """Return (name, (width_mm, height_mm), windows_code_or_None) in portrait."""
+    pr = cfg["printer"]
+    name = pr.get("paper", "13X17").strip().upper().replace(" ", "")
+    w, h = pr.get("paper_width_mm", "").strip(), pr.get("paper_height_mm", "").strip()
+    if name == "CUSTOM" or (w and h):
+        try:
+            w, h = float(w), float(h)
+            return "CUSTOM", (min(w, h), max(w, h)), None
+        except ValueError:
+            log.warning("paper_width_mm / paper_height_mm are not numbers; using 13X17")
+            name = "13X17"
+    if name not in PAPERS:
+        log.warning("Unknown paper %r; using 13X17", name)
+        name = "13X17"
+    dims, code = PAPERS[name]
+    return name, dims, code
+
+
 def render_film(film, cfg, film_no=1):
     """Compose one film box into a page-sized PIL image."""
     pg = cfg["page"]
-    paper = cfg["printer"].get("paper", "A3").upper()
-    (pw_mm, ph_mm), _ = PAPERS.get(paper, PAPERS["A3"])
+    _, (pw_mm, ph_mm), _ = paper_size(cfg)
 
     orient = cfg["printer"].get("orientation", "auto").lower()
     if orient == "auto":
@@ -264,15 +288,25 @@ def print_windows(img, cfg, landscape, copies, jobname):
     from PIL import ImageWin
 
     name = cfg["printer"].get("name", "").strip() or win32print.GetDefaultPrinter()
-    paper = cfg["printer"].get("paper", "A3").upper()
+    paper, (w_mm, h_mm), code = paper_size(cfg)
     h = win32print.OpenPrinter(name)
     try:
         devmode = win32print.GetPrinter(h, 2)["pDevMode"]
     finally:
         win32print.ClosePrinter(h)
-    devmode.PaperSize = PAPERS.get(paper, PAPERS["A3"])[1]
     devmode.Orientation = win32con.DMORIENT_LANDSCAPE if landscape else win32con.DMORIENT_PORTRAIT
-    devmode.Fields |= win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
+    devmode.Fields |= win32con.DM_ORIENTATION
+    if cfg["printer"].getboolean("set_paper_size", True):
+        if code:
+            devmode.PaperSize = code
+            devmode.Fields |= win32con.DM_PAPERSIZE
+        else:
+            # Custom size, in tenths of a millimetre (portrait width x length)
+            devmode.PaperSize = 256  # DMPAPER_USER
+            devmode.PaperWidth = int(round(w_mm * 10))
+            devmode.PaperLength = int(round(h_mm * 10))
+            devmode.Fields |= (win32con.DM_PAPERSIZE | win32con.DM_PAPERWIDTH
+                               | win32con.DM_PAPERLENGTH)
 
     hdc = win32gui.CreateDC("WINSPOOL", name, devmode)
     dc = win32ui.CreateDCFromHandle(hdc)
@@ -577,7 +611,7 @@ def main():
         (evt.EVT_ABORTED, scp.on_close),
     ]
     log.info("KDC DICOM Print Server %s listening: AE=%s port=%d paper=%s printer=%s",
-             VERSION, ae_title, port, cfg["printer"].get("paper", "A3"),
+             VERSION, ae_title, port, paper_size(cfg)[0],
              cfg["printer"].get("name", "") or "(Windows default)")
     try:
         ae.start_server(("0.0.0.0", port), block=True, evt_handlers=handlers)

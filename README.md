@@ -2,7 +2,7 @@
 
 Turns a Windows PC and an ordinary printer (Epson EcoTank L18050, A3) into a
 DICOM printer for the GE CT console. The CT sends a film; this program lays the
-images out on an A3 page and prints it. It also keeps a PNG copy of every film.
+images out on a 13x17 in (or A3) sheet and prints it. It also keeps a PNG copy of every film.
 
 No Python is needed on the print PC. GitHub builds a ready-to-run `.exe`.
 
@@ -18,8 +18,10 @@ The download contains `KDCPrintServer.exe`, `TestPrint.exe`, `config.ini`,
 ## 1. Set up the print PC (one time)
 
 1. Install the Epson L18050 driver and print a Windows test page.
-   In the printer's preferences, set the paper to **A3** and choose your paper type
-   (glossy/photo or film paper) with **High** quality.
+   In the printer's preferences (Printing Preferences > Paper Size > **User-Defined**),
+   create a size called `13x17` (width 330.2 mm, height 431.8 mm), save it and set it as default.
+   Also choose your paper type (glossy/photo or film paper) with **High** quality.
+   The server prints on 13x17 sheets by default; change `paper` in config.ini for A3 or other sizes.
 2. Give the PC a **fixed IP address** on the same network as the CT, e.g. `192.168.1.50`.
 3. Unzip the package to a permanent folder, e.g. `C:\KDC-Print`.
 4. Edit `config.ini`:
@@ -27,7 +29,7 @@ The download contains `KDCPrintServer.exe`, `TestPrint.exe`, `config.ini`,
    - `header_text =` the text printed at the top of each film
 5. Right-click `install.bat` and choose **Run as administrator**. This opens the
    firewall, starts the server in the background, and makes it start at every login.
-6. Run `TestPrint.exe`. An A3 page with 12 test circles should print.
+6. Run `TestPrint.exe`. A 13x17 sheet with 12 test circles should print.
 
 After changing `config.ini`, run `restart.bat`.
 To remove the server, run `uninstall.bat` as administrator.
@@ -65,6 +67,8 @@ Everything is logged in `print_server.log` next to the exe.
 - **The log shows "PRINT film" but nothing comes out.** Check the printer name in
   config.ini and look for jobs stuck in the Windows print queue.
 - **Wrong paper size or orientation.** Set `paper` / `orientation` in config.ini.
+  If the Epson ignores the 13x17 size, set `set_paper_size = no` so it uses the default
+  size from the Epson printer preferences (set that to your 13x17 user-defined size).
 - **To save ink,** set `background = white`. This only changes margins and gaps.
 - **Port 104 is already in use** (e.g. by a PACS): set `port = 11112` in config.ini and on the
   CT, then run install.bat again.
