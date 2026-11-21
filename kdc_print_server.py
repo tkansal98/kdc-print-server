@@ -90,7 +90,7 @@ A3 = A3
 
 [page]
 dpi = 300
-background = black
+background = white
 margin_mm = 1
 gap_mm = 1.5
 header_text = Kansal Diagnostic Centre, Amritsar
@@ -266,7 +266,7 @@ def render_film(film, cfg, film_no=1, page_mm=None):
     dpi = pg.getint("dpi", 300)
     mm = dpi / 25.4
     W, H = int(pw_mm * mm), int(ph_mm * mm)
-    dark = pg.get("background", "black").lower() != "white"
+    dark = pg.get("background", "white").lower() != "white"
     bg, fg = (0, (235, 235, 235)) if dark else (255, (20, 20, 20))
     page = Image.new("RGB", (W, H), (bg, bg, bg))
     draw = ImageDraw.Draw(page)
