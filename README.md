@@ -57,6 +57,35 @@ In the CT's DICOM printer list, choose Add and open **Define new printer paramet
 
 Save the entry, then print one film from the CT.
 
+### Choosing the paper for each print
+
+For every print, a small window pops up on the print PC asking **which paper is loaded:
+13 x 17 or A4**. The paper the scanner asked for is highlighted, and it is used
+automatically after 20 seconds if nobody clicks. "Don't print" cancels the film.
+Further films from the same scanner within 60 seconds use the same answer, so a CT
+series asks only once. Settings: `ask_paper`, `paper_choices`, `ask_timeout` and
+`ask_remember_seconds` in config.ini.
+
+**Make the Epson really switch paper (recommended).** The Epson driver often ignores
+paper sizes requested by programs. The reliable fix is to add the Epson to Windows twice:
+
+1. Settings > Printers & scanners > **Add a printer** > "The printer that I want isn't listed"
+   > **Add a local printer** > *Use an existing port*: choose the same port as the current
+   Epson (e.g. `USB001`) > pick the **EPSON L18050** driver > **Use the driver that is
+   currently installed** > name it `EPSON A4`.
+2. Rename the original Epson to `EPSON 13x17` (or keep its name).
+3. Open **Printing Preferences** of each one: set `EPSON A4` to **A4**, and `EPSON 13x17`
+   to your 13x17 user-defined size (329 x 431.8 mm). Set paper type/quality on both.
+4. In config.ini:
+   ```
+   [windows_printers]
+   13X17 = EPSON 13x17
+   A4 = EPSON A4
+   ```
+5. Run `restart.bat`.
+
+Choosing A4 in the pop-up then prints through `EPSON A4` with its own A4 settings.
+
 ### 13x17 and A4 on the same printer
 
 Add **two** printer entries on the CT, both with the same network address and port:

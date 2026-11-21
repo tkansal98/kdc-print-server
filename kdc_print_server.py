@@ -39,7 +39,7 @@ from pynetdicom.sop_class import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-VERSION = "1.2"
+VERSION = "1.3"
 
 # Paper sizes in mm (portrait) and the matching Windows DMPAPER_* code.
 # None = no standard Windows code; sent to the driver as a custom (user-defined) size.
@@ -74,8 +74,16 @@ paper_width_mm =
 paper_height_mm =
 set_paper_size = yes
 orientation = auto
+ask_paper = yes
+paper_choices = 13X17, A4
+ask_timeout = 20
+ask_remember_seconds = 60
 auto_print = yes
 max_copies = 5
+
+[windows_printers]
+13X17 =
+A4 =
 
 [paper_by_ae]
 EPSON_13X17 = 13X17
@@ -359,13 +367,19 @@ def print_windows(film, cfg, copies, jobname, film_no):
     import win32ui
     from PIL import ImageWin
 
-    name = cfg["printer"].get("name", "").strip() or win32print.GetDefaultPrinter()
     paper, (w_mm, h_mm), code = paper_size(cfg, film.get("paper"))
+    mapped = ""
+    if cfg.has_section("windows_printers"):
+        mapped = cfg["windows_printers"].get(paper.lower(), "").strip()
+    name = mapped or cfg["printer"].get("name", "").strip() or win32print.GetDefaultPrinter()
+    # A printer set up just for this paper already has the right size as its
+    # default, so we leave its settings alone.
+    change_paper = not mapped and cfg["printer"].getboolean("set_paper_size", True)
 
     h = win32print.OpenPrinter(name)
     try:
         devmode, level = _user_devmode(win32print, h)
-        if devmode is not None and cfg["printer"].getboolean("set_paper_size", True):
+        if devmode is not None and change_paper:
             # Always ask for portrait; landscape films are rotated by us.
             devmode.Orientation = win32con.DMORIENT_PORTRAIT
             devmode.Fields |= win32con.DM_ORIENTATION
@@ -427,10 +441,148 @@ def print_windows(film, cfg, copies, jobname, film_no):
     return page
 
 
+class PaperAsker:
+    """Small always-on-top window on the print PC that asks which paper to use.
+
+    The suggested paper (from the AE title / film size) is highlighted and is
+    used automatically if nobody answers within ask_timeout seconds. The answer
+    is reused for further films from the same machine for ask_remember_seconds,
+    so a 10-film CT series asks only once."""
+
+    def __init__(self, cfg):
+        pr = cfg["printer"]
+        self.timeout = max(3, pr.getint("ask_timeout", 20))
+        self.remember = pr.getint("ask_remember_seconds", 60)
+        self.choices = [c.strip().upper() for c in pr.get("paper_choices", "13X17, A4").split(",")
+                        if c.strip()]
+        self.q = queue.Queue()
+        self.root = None
+        self.last = {}  # (calling, called) -> (paper or None, time)
+        self.enabled = pr.getboolean("ask_paper", True)
+        if self.enabled:
+            try:
+                import tkinter  # noqa: F401
+            except Exception:
+                log.warning("No GUI available; paper will not be asked")
+                self.enabled = False
+
+    # ---- called from the print worker thread
+    def ask(self, film, suggested, film_no):
+        if not self.enabled or self.root is None:
+            return suggested
+        key = (film.get("calling", ""), film.get("called", ""))
+        prev = self.last.get(key)
+        if prev and time.time() - prev[1] < self.remember:
+            self.last[key] = (prev[0], time.time())
+            return prev[0]
+        done, box = threading.Event(), {"paper": suggested}
+        self.q.put((film, suggested, film_no, done, box))
+        done.wait()
+        self.last[key] = (box["paper"], time.time())
+        return box["paper"]
+
+    # ---- main thread
+    def run(self):
+        import tkinter as tk
+        self.tk = tk
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.root.after(200, self._poll)
+        self.root.mainloop()
+
+    def _poll(self):
+        try:
+            while True:
+                self._dialog(*self.q.get_nowait())
+        except queue.Empty:
+            pass
+        self.root.after(200, self._poll)
+
+    def _dialog(self, film, suggested, film_no, done, box):
+        tk = self.tk
+        from PIL import ImageTk
+        win = tk.Toplevel(self.root)
+        win.title("KDC DICOM Print")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(padx=16, pady=12)
+        finished = {"v": False}
+
+        def finish(paper):
+            if finished["v"]:
+                return
+            finished["v"] = True
+            box["paper"] = paper
+            log.info("Paper chosen for film #%d: %s", film_no, paper or "CANCELLED")
+            win.destroy()
+            done.set()
+
+        n = len(film["boxes"])
+        src = film.get("calling") or "scanner"
+        tk.Label(win, text=f"Print film {film_no} from {src}", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        tk.Label(win, text=f"{n} image{'s' if n != 1 else ''}  •  sent to {film.get('called', '')}",
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 8))
+        try:
+            thumb, _ = render_film(film, _thumb_cfg(self_cfg=film.get("_cfg")), film_no)
+            thumb.thumbnail((220, 220))
+            photo = ImageTk.PhotoImage(thumb)
+            lbl = tk.Label(win, image=photo, bd=1, relief="solid")
+            lbl.image = photo
+            lbl.pack(pady=(0, 10))
+        except Exception:
+            pass
+
+        tk.Label(win, text="Which paper is loaded?", font=("Segoe UI", 11)).pack(anchor="w")
+        row = tk.Frame(win)
+        row.pack(fill="x", pady=6)
+        for paper in self.choices:
+            is_sug = paper == suggested
+            tk.Button(row, text=paper.replace("X", " x ") if paper[0].isdigit() else paper,
+                      width=10, height=2,
+                      font=("Segoe UI", 12, "bold" if is_sug else "normal"),
+                      bg="#2b6cb0" if is_sug else "#e2e8f0", fg="white" if is_sug else "black",
+                      command=lambda p=paper: finish(p)).pack(side="left", padx=4)
+        tk.Button(row, text="Don't print", width=10, height=2,
+                  command=lambda: finish(None)).pack(side="left", padx=(16, 4))
+        countdown = tk.Label(win, font=("Segoe UI", 9), fg="#555")
+        countdown.pack(anchor="w")
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+
+        remaining = {"s": self.timeout}
+
+        def tick():
+            if finished["v"]:
+                return
+            if remaining["s"] <= 0:
+                finish(suggested)
+                return
+            countdown.config(text=f"Printing on {suggested} in {remaining['s']} s if nothing is chosen")
+            remaining["s"] -= 1
+            win.after(1000, tick)
+
+        tick()
+        win.update_idletasks()
+        x = (win.winfo_screenwidth() - win.winfo_width()) // 2
+        y = (win.winfo_screenheight() - win.winfo_height()) // 3
+        win.geometry(f"+{x}+{y}")
+        win.lift()
+        win.focus_force()
+
+
+def _thumb_cfg(self_cfg=None):
+    """A light config for drawing the small preview quickly."""
+    c = configparser.ConfigParser()
+    c.read_string(DEFAULT_CONFIG)
+    c["page"]["dpi"] = "40"
+    c["page"]["header_text"] = ""
+    c["page"]["show_datetime"] = "no"
+    return c
+
+
 class PrintWorker(threading.Thread):
-    def __init__(self, cfg, do_print):
+    def __init__(self, cfg, do_print, asker=None):
         super().__init__(daemon=True)
-        self.cfg, self.do_print = cfg, do_print
+        self.cfg, self.do_print, self.asker = cfg, do_print, asker
         self.q = queue.Queue()
         self.out_root = cfg["output"].get("folder", "prints")
         if not os.path.isabs(self.out_root):
@@ -448,6 +600,12 @@ class PrintWorker(threading.Thread):
                 log.exception("Failed to render/print film")
 
     def handle(self, film, copies, film_no):
+        if self.asker is not None:
+            paper = self.asker.ask(film, film.get("paper"), film_no)
+            if paper is None:
+                log.info("Film #%d not printed (cancelled on the print PC)", film_no)
+                return
+            film["paper"] = paper
         page = None
         if self.do_print and self.cfg["printer"].getboolean("auto_print", True):
             if sys.platform == "win32":
@@ -537,7 +695,8 @@ class PrintSCP:
                 paper, why = choose_paper(self.cfg, event.assoc.acceptor.ae_title,
                                           attrs.get("FilmSizeID", ""))
                 film = {"attrs": self._copy(attrs), "session": session_uid, "boxes": [],
-                        "paper": paper}
+                        "paper": paper, "called": event.assoc.acceptor.ae_title.strip(),
+                        "calling": event.assoc.requestor.ae_title.strip()}
                 seq = []
                 for pos in range(1, n + 1):
                     buid = generate_uid()
@@ -619,6 +778,7 @@ class PrintSCP:
                 log.info("PRINT film #%d: %d/%d images, %d copies, paper %s",
                          self.film_counter, filled, len(film["boxes"]), copies, film["paper"])
                 snapshot = {"attrs": film["attrs"], "paper": film["paper"],
+                            "called": film.get("called", ""), "calling": film.get("calling", ""),
                             "boxes": [dict(b) for b in film["boxes"]]}
                 self.worker.submit(snapshot, copies, self.film_counter)
         return 0x0000, None
@@ -712,7 +872,10 @@ def main():
     ae_title = cfg["dicom"].get("ae_title", "EPSON_A3").strip()[:16]
     port = cfg["dicom"].getint("port", 104)
 
-    worker = PrintWorker(cfg, do_print=not args.no_print)
+    asker = PaperAsker(cfg) if cfg["printer"].getboolean("ask_paper", True) else None
+    if asker is not None and not asker.enabled:
+        asker = None
+    worker = PrintWorker(cfg, do_print=not args.no_print, asker=asker)
     worker.cleanup_old()
     worker.start()
     scp = PrintSCP(cfg, worker)
@@ -741,7 +904,17 @@ def main():
              VERSION, ", ".join(sorted(scp.allowed_aets())), port, paper_size(cfg)[0],
              cfg["printer"].get("name", "") or "(Windows default)")
     try:
-        ae.start_server(("0.0.0.0", port), block=True, evt_handlers=handlers)
+        if asker is None:
+            ae.start_server(("0.0.0.0", port), block=True, evt_handlers=handlers)
+        else:
+            ae.start_server(("0.0.0.0", port), block=False, evt_handlers=handlers)
+            try:
+                asker.run()  # GUI loop in the main thread
+            except Exception:
+                log.exception("Paper window failed; continuing without asking")
+                asker.enabled = False
+                while True:
+                    time.sleep(3600)
     except OSError as e:
         log.error("Cannot open port %d: %s (is another program using it, or run as admin?)", port, e)
         time.sleep(10)

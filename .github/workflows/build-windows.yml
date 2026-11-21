@@ -33,7 +33,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item config.ini dist\
-          (Get-Content dist\config.ini) -replace '^port = .*', 'port = 11112' | Set-Content dist\config.ini
+          (Get-Content dist\config.ini) -replace '^port = .*', 'port = 11112' -replace '^ask_paper = .*', 'ask_paper = no' | Set-Content dist\config.ini
           $p = Start-Process dist\KDCPrintServer.exe -ArgumentList '--no-print' -PassThru
           Start-Sleep -Seconds 8
           python test_send_film.py 127.0.0.1 11112 EPSON_A3
