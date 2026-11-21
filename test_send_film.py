@@ -70,7 +70,7 @@ print("Film session:", hex(status.Status))
 fb = Dataset()
 fb.ImageDisplayFormat = fmt
 fb.FilmOrientation = orientation
-fb.FilmSizeID = "14INX17IN"
+fb.FilmSizeID = sys.argv[6] if len(sys.argv) > 6 else "14INX17IN"
 fb.MagnificationType = "CUBIC"
 ref = Dataset()
 ref.ReferencedSOPClassUID = BasicFilmSession

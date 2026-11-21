@@ -57,6 +57,19 @@ In the CT's DICOM printer list, choose Add and open **Define new printer paramet
 
 Save the entry, then print one film from the CT.
 
+### 13x17 and A4 on the same printer
+
+Add **two** printer entries on the CT, both with the same network address and port:
+
+| DICOM printer label / AET | Prints on |
+|---|---|
+| `EPSON_13X17` | 13x17 in sheets |
+| `EPSON_A4` | A4 |
+
+Choose the printer that matches the paper loaded in the Epson. The mapping is in
+`config.ini` under `[paper_by_ae]`. If the CT sends to some other AE title, the film size
+chosen on the CT decides (`[paper_by_film_size]`), and otherwise `paper` is used.
+
 ## Troubleshooting
 
 Everything is logged in `print_server.log` next to the exe.
@@ -66,6 +79,10 @@ Everything is logged in `print_server.log` next to the exe.
 - **"Association rejected".** The AET or port on the CT doesn't match config.ini.
 - **The log shows "PRINT film" but nothing comes out.** Check the printer name in
   config.ini and look for jobs stuck in the Windows print queue.
+- **Print comes out small / on the wrong size.** Look in `print_server.log` for the
+  "Driver page: ... wanted ..." line. It shows the paper size the Epson driver actually used.
+  The server always fills that page. If it says 210 x 297 mm (A4) while you wanted 13x17,
+  select the 13x17 user-defined size in the Epson Printing Preferences.
 - **Wrong paper size or orientation.** Set `paper` / `orientation` in config.ini.
   If the Epson ignores the 13x17 size, set `set_paper_size = no` so it uses the default
   size from the Epson printer preferences (set that to your 13x17 user-defined size).

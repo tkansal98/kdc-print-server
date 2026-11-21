@@ -39,7 +39,7 @@ from pynetdicom.sop_class import (
 )
 
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__))
-VERSION = "1.1"
+VERSION = "1.2"
 
 # Paper sizes in mm (portrait) and the matching Windows DMPAPER_* code.
 # None = no standard Windows code; sent to the driver as a custom (user-defined) size.
@@ -75,10 +75,21 @@ orientation = auto
 auto_print = yes
 max_copies = 5
 
+[paper_by_ae]
+EPSON_13X17 = 13X17
+EPSON_A4 = A4
+
+[paper_by_film_size]
+14INX17IN = 13X17
+A4 = A4
+8INX10IN = A4
+8_5INX11IN = A4
+A3 = A3
+
 [page]
 dpi = 300
 background = black
-margin_mm = 4
+margin_mm = 1
 gap_mm = 1.5
 header_text = Kansal Diagnostic Centre, Amritsar
 header_height_mm = 7
@@ -203,12 +214,12 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def paper_size(cfg):
+def paper_size(cfg, name=None):
     """Return (name, (width_mm, height_mm), windows_code_or_None) in portrait."""
     pr = cfg["printer"]
-    name = pr.get("paper", "13X17").strip().upper().replace(" ", "")
+    name = (name or pr.get("paper", "13X17")).strip().upper().replace(" ", "")
     w, h = pr.get("paper_width_mm", "").strip(), pr.get("paper_height_mm", "").strip()
-    if name == "CUSTOM" or (w and h):
+    if name == "CUSTOM":
         try:
             w, h = float(w), float(h)
             return "CUSTOM", (min(w, h), max(w, h)), None
@@ -222,10 +233,26 @@ def paper_size(cfg):
     return name, dims, code
 
 
-def render_film(film, cfg, film_no=1):
-    """Compose one film box into a page-sized PIL image."""
+def choose_paper(cfg, called_ae, film_size_id):
+    """Pick the paper for a film: by the AE title the CT sent it to, then by the
+    CT's film size, then the default [printer] paper."""
+    ae = (called_ae or "").strip().lower()
+    if cfg.has_section("paper_by_ae") and ae and cfg["paper_by_ae"].get(ae, "").strip():
+        return cfg["paper_by_ae"][ae].strip().upper(), f"AE title {called_ae.strip()}"
+    size = (film_size_id or "").strip().lower()
+    if cfg.has_section("paper_by_film_size") and size and cfg["paper_by_film_size"].get(size, "").strip():
+        return cfg["paper_by_film_size"][size].strip().upper(), f"film size {film_size_id}"
+    return paper_size(cfg)[0], "default"
+
+
+def render_film(film, cfg, film_no=1, page_mm=None):
+    """Compose one film box into a page-sized PIL image.
+    page_mm = (width, height) portrait in mm; default is the chosen paper size."""
     pg = cfg["page"]
-    _, (pw_mm, ph_mm), _ = paper_size(cfg)
+    if page_mm:
+        pw_mm, ph_mm = page_mm
+    else:
+        _, (pw_mm, ph_mm), _ = paper_size(cfg, film.get("paper"))
 
     orient = cfg["printer"].get("orientation", "auto").lower()
     if orient == "auto":
@@ -280,7 +307,39 @@ def render_film(film, cfg, film_no=1):
 # --------------------------------------------------------------------------
 # Printing (Windows GDI) and saving
 # --------------------------------------------------------------------------
-def print_windows(img, cfg, landscape, copies, jobname):
+def _user_devmode(win32print, h):
+    """The printer settings this Windows user picked in Printing Preferences
+    (falls back to the printer-wide defaults)."""
+    for level in (9, 8, 2):
+        try:
+            dm = win32print.GetPrinter(h, level).get("pDevMode")
+            if dm is not None:
+                return dm, level
+        except Exception:
+            continue
+    return None, 0
+
+
+def _ensure_form(win32print, form_name, w_mm, h_mm):
+    """Create a Windows paper form (e.g. '13x17') if it doesn't exist yet."""
+    try:
+        if any(f["Name"].lower() == form_name.lower() for f in win32print.EnumForms(None)):
+            return True
+        w, hgt = int(w_mm * 1000), int(h_mm * 1000)  # thousandths of a mm
+        win32print.AddForm(None, 1, {
+            "Flags": 0, "Name": form_name, "Size": {"cx": w, "cy": hgt},
+            "ImageableArea": {"left": 0, "top": 0, "right": w, "bottom": hgt},
+        })
+        log.info("Created Windows paper form '%s' (%.1f x %.1f mm)", form_name, w_mm, h_mm)
+        return True
+    except Exception as e:
+        log.warning("Could not create paper form '%s': %s", form_name, e)
+        return False
+
+
+def print_windows(film, cfg, copies, jobname, film_no):
+    """Print one film. The page is built to fill the paper the driver actually
+    reports, so it is never shrunk onto a smaller sheet. Returns the page image."""
     import win32con
     import win32gui
     import win32print
@@ -288,44 +347,70 @@ def print_windows(img, cfg, landscape, copies, jobname):
     from PIL import ImageWin
 
     name = cfg["printer"].get("name", "").strip() or win32print.GetDefaultPrinter()
-    paper, (w_mm, h_mm), code = paper_size(cfg)
+    paper, (w_mm, h_mm), code = paper_size(cfg, film.get("paper"))
+
     h = win32print.OpenPrinter(name)
     try:
-        devmode = win32print.GetPrinter(h, 2)["pDevMode"]
+        devmode, level = _user_devmode(win32print, h)
+        if devmode is not None and cfg["printer"].getboolean("set_paper_size", True):
+            # Always ask for portrait; landscape films are rotated by us.
+            devmode.Orientation = win32con.DMORIENT_PORTRAIT
+            devmode.Fields |= win32con.DM_ORIENTATION
+            if code:
+                devmode.PaperSize = code
+                devmode.Fields |= win32con.DM_PAPERSIZE
+            else:
+                form = f"{paper.lower()}" if paper != "CUSTOM" else f"{w_mm:.0f}x{h_mm:.0f}mm"
+                if _ensure_form(win32print, form, w_mm, h_mm):
+                    devmode.FormName = form
+                    devmode.Fields |= win32con.DM_FORMNAME
+                devmode.PaperSize = 256  # DMPAPER_USER
+                devmode.PaperWidth = int(round(w_mm * 10))
+                devmode.PaperLength = int(round(h_mm * 10))
+                devmode.Fields |= (win32con.DM_PAPERSIZE | win32con.DM_PAPERWIDTH
+                                   | win32con.DM_PAPERLENGTH)
+            try:  # let the Epson driver merge/validate our changes
+                win32print.DocumentProperties(0, h, name, devmode, devmode,
+                                              win32con.DM_IN_BUFFER | win32con.DM_OUT_BUFFER)
+            except Exception as e:
+                log.debug("DocumentProperties: %s", e)
     finally:
         win32print.ClosePrinter(h)
-    devmode.Orientation = win32con.DMORIENT_LANDSCAPE if landscape else win32con.DMORIENT_PORTRAIT
-    devmode.Fields |= win32con.DM_ORIENTATION
-    if cfg["printer"].getboolean("set_paper_size", True):
-        if code:
-            devmode.PaperSize = code
-            devmode.Fields |= win32con.DM_PAPERSIZE
-        else:
-            # Custom size, in tenths of a millimetre (portrait width x length)
-            devmode.PaperSize = 256  # DMPAPER_USER
-            devmode.PaperWidth = int(round(w_mm * 10))
-            devmode.PaperLength = int(round(h_mm * 10))
-            devmode.Fields |= (win32con.DM_PAPERSIZE | win32con.DM_PAPERWIDTH
-                               | win32con.DM_PAPERLENGTH)
 
     hdc = win32gui.CreateDC("WINSPOOL", name, devmode)
     dc = win32ui.CreateDCFromHandle(hdc)
     try:
+        dpx, dpy = dc.GetDeviceCaps(win32con.LOGPIXELSX), dc.GetDeviceCaps(win32con.LOGPIXELSY)
         pw, ph = dc.GetDeviceCaps(win32con.HORZRES), dc.GetDeviceCaps(win32con.VERTRES)
-        scale = min(pw / img.width, ph / img.height)
-        w, hgt = int(img.width * scale), int(img.height * scale)
-        x, y = (pw - w) // 2, (ph - hgt) // 2
+        phys_w = dc.GetDeviceCaps(win32con.PHYSICALWIDTH) / dpx * 25.4
+        phys_h = dc.GetDeviceCaps(win32con.PHYSICALHEIGHT) / dpy * 25.4
+        area_w, area_h = pw / dpx * 25.4, ph / dpy * 25.4
+        log.info("Driver page: %.0f x %.0f mm (printable %.0f x %.0f mm), wanted %s %.0f x %.0f mm",
+                 phys_w, phys_h, area_w, area_h, paper, w_mm, h_mm)
+        if abs(min(phys_w, phys_h) - w_mm) > 5 or abs(max(phys_w, phys_h) - h_mm) > 5:
+            log.warning("The Epson driver gave a different paper size than %s. Load that size "
+                        "or select it in Printing Preferences; printing to fill the driver's page.",
+                        paper)
+
+        # Build the page to exactly fill the printable area (portrait or landscape
+        # as the film wants), then rotate if the driver page is the other way.
+        page, landscape = render_film(film, cfg, film_no,
+                                      page_mm=(min(area_w, area_h), max(area_w, area_h)))
+        img = page
+        if (img.width > img.height) != (pw > ph):
+            img = img.rotate(90, expand=True)
         dib = ImageWin.Dib(img)
         dc.StartDoc(jobname)
         for _ in range(copies):
             dc.StartPage()
-            dib.draw(dc.GetHandleOutput(), (x, y, x + w, y + hgt))
+            dib.draw(dc.GetHandleOutput(), (0, 0, pw, ph))
             dc.EndPage()
         dc.EndDoc()
     finally:
         dc.DeleteDC()
-    log.info("Sent to printer '%s' (%s, %s, %d copies)", name, paper,
-             "landscape" if landscape else "portrait", copies)
+    log.info("Sent to printer '%s' (%s, %s, %d copies, settings level %d)", name, paper,
+             "landscape" if landscape else "portrait", copies, level)
+    return page
 
 
 class PrintWorker(threading.Thread):
@@ -349,7 +434,15 @@ class PrintWorker(threading.Thread):
                 log.exception("Failed to render/print film")
 
     def handle(self, film, copies, film_no):
-        page, landscape = render_film(film, self.cfg, film_no)
+        page = None
+        if self.do_print and self.cfg["printer"].getboolean("auto_print", True):
+            if sys.platform == "win32":
+                page = print_windows(film, self.cfg, copies, f"DICOM film {film_no}", film_no)
+            else:
+                log.warning("Printing is only supported on Windows; image saved only")
+        if page is None:
+            page, _ = render_film(film, self.cfg, film_no)
+
         out = self.cfg["output"]
         day = os.path.join(self.out_root, dt.date.today().isoformat())
         os.makedirs(day, exist_ok=True)
@@ -361,11 +454,6 @@ class PrintWorker(threading.Thread):
         if out.getboolean("save_pdf", False):
             page.save(stem + ".pdf", resolution=dpi)
             log.info("Saved %s.pdf", stem)
-        if self.do_print and self.cfg["printer"].getboolean("auto_print", True):
-            if sys.platform == "win32":
-                print_windows(page, self.cfg, landscape, copies, f"DICOM film {film_no}")
-            else:
-                log.warning("Printing is only supported on Windows; image saved only")
 
     def cleanup_old(self):
         keep = self.cfg["output"].getint("keep_days", 30)
@@ -432,7 +520,10 @@ class PrintSCP:
                     mine = [k for k, v in self.sessions.items() if v["assoc"] == id(event.assoc)]
                     session_uid = mine[-1] if mine else None
                 box_cls = BasicColorImageBox if self._is_color(event) else BasicGrayscaleImageBox
-                film = {"attrs": self._copy(attrs), "session": session_uid, "boxes": []}
+                paper, why = choose_paper(self.cfg, event.assoc.acceptor.ae_title,
+                                          attrs.get("FilmSizeID", ""))
+                film = {"attrs": self._copy(attrs), "session": session_uid, "boxes": [],
+                        "paper": paper}
                 seq = []
                 for pos in range(1, n + 1):
                     buid = generate_uid()
@@ -447,8 +538,9 @@ class PrintSCP:
                 if session_uid:
                     self.sessions[session_uid]["films"].append(uid)
                 rsp.ReferencedImageBoxSequence = seq
-                log.info("Film box created: format=%s (%d images), orientation=%s, size=%s",
-                         fmt, n, attrs.get("FilmOrientation", "-"), attrs.get("FilmSizeID", "-"))
+                log.info("Film box created: format=%s (%d images), orientation=%s, size=%s -> paper %s (%s)",
+                         fmt, n, attrs.get("FilmOrientation", "-"), attrs.get("FilmSizeID", "-"),
+                         paper, why)
                 return 0x0000, rsp
 
         log.warning("N-CREATE for unsupported class %s", cls)
@@ -510,9 +602,9 @@ class PrintSCP:
                 film = self.films[fuid]
                 filled = sum(1 for b in film["boxes"] if b["image"] is not None)
                 self.film_counter += 1
-                log.info("PRINT film #%d: %d/%d images, %d copies",
-                         self.film_counter, filled, len(film["boxes"]), copies)
-                snapshot = {"attrs": film["attrs"],
+                log.info("PRINT film #%d: %d/%d images, %d copies, paper %s",
+                         self.film_counter, filled, len(film["boxes"]), copies, film["paper"])
+                snapshot = {"attrs": film["attrs"], "paper": film["paper"],
                             "boxes": [dict(b) for b in film["boxes"]]}
                 self.worker.submit(snapshot, copies, self.film_counter)
         return 0x0000, None
@@ -549,6 +641,26 @@ class PrintSCP:
         return 0x0000, ds
 
     # ---- association bookkeeping
+    def allowed_aets(self):
+        names = {self.cfg["dicom"].get("ae_title", "EPSON_A3").strip().upper()}
+        if self.cfg.has_section("paper_by_ae"):
+            names |= {k.strip().upper() for k in self.cfg["paper_by_ae"]}
+        return names
+
+    def on_requested(self, event):
+        """Answer as whichever of our AE titles the CT called."""
+        a = event.assoc
+        called = (a.requestor.primitive.called_ae_title or "").strip()
+        if called.upper() in self.allowed_aets():
+            a.acceptor.ae_title = called
+        elif self.cfg["dicom"].getboolean("require_called_ae", False):
+            log.warning("Rejected association to unknown AE title %r (allowed: %s)",
+                        called, ", ".join(sorted(self.allowed_aets())))
+            a.acse.send_reject(0x01, 0x01, 0x07)
+        else:
+            log.info("CT called AE title %r (not listed); accepting with default paper", called)
+            a.acceptor.ae_title = called or a.acceptor.ae_title
+
     def on_conn(self, event):
         a = event.assoc
         log.info("Association from %s (%s:%s) to AE %s",
@@ -592,7 +704,7 @@ def main():
     scp = PrintSCP(cfg, worker)
 
     ae = AE(ae_title=ae_title)
-    ae.require_called_aet = cfg["dicom"].getboolean("require_called_ae", False)
+    ae.require_called_aet = False  # checked in PrintSCP.on_requested
     ae.maximum_pdu_size = 0  # unlimited
     ae.dimse_timeout = 120
     ae.network_timeout = 120
@@ -606,12 +718,13 @@ def main():
         (evt.EVT_N_ACTION, scp.on_action),
         (evt.EVT_N_DELETE, scp.on_delete),
         (evt.EVT_N_GET, scp.on_get),
+        (evt.EVT_REQUESTED, scp.on_requested),
         (evt.EVT_ACCEPTED, scp.on_conn),
         (evt.EVT_RELEASED, scp.on_close),
         (evt.EVT_ABORTED, scp.on_close),
     ]
     log.info("KDC DICOM Print Server %s listening: AE=%s port=%d paper=%s printer=%s",
-             VERSION, ae_title, port, paper_size(cfg)[0],
+             VERSION, ", ".join(sorted(scp.allowed_aets())), port, paper_size(cfg)[0],
              cfg["printer"].get("name", "") or "(Windows default)")
     try:
         ae.start_server(("0.0.0.0", port), block=True, evt_handlers=handlers)
