@@ -74,7 +74,7 @@ paper_width_mm =
 paper_height_mm =
 set_paper_size = yes
 orientation = auto
-ask_paper = yes
+ask_paper = no
 paper_choices = 13X17, A4
 ask_timeout = 20
 ask_remember_seconds = 60
@@ -458,7 +458,7 @@ class PaperAsker:
         self.q = queue.Queue()
         self.root = None
         self.last = {}  # (calling, called) -> (paper or None, time)
-        self.enabled = pr.getboolean("ask_paper", True)
+        self.enabled = pr.getboolean("ask_paper", False)
         if self.enabled:
             try:
                 import tkinter  # noqa: F401
@@ -872,7 +872,7 @@ def main():
     ae_title = cfg["dicom"].get("ae_title", "EPSON_A3").strip()[:16]
     port = cfg["dicom"].getint("port", 104)
 
-    asker = PaperAsker(cfg) if cfg["printer"].getboolean("ask_paper", True) else None
+    asker = PaperAsker(cfg) if cfg["printer"].getboolean("ask_paper", False) else None
     if asker is not None and not asker.enabled:
         asker = None
     worker = PrintWorker(cfg, do_print=not args.no_print, asker=asker)

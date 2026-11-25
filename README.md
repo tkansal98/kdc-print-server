@@ -59,8 +59,9 @@ Save the entry, then print one film from the CT.
 
 ### Choosing the paper for each print
 
-For every print, a small window pops up on the print PC asking **which paper is loaded:
-13 x 17 or A4**. The paper the scanner asked for is highlighted, and it is used
+The paper is chosen automatically from the AE title the scanner sends to (`EPSON_A4` → A4,
+anything else → 13x17). Optionally, set `ask_paper = yes` and a small window pops up on the
+print PC for every print asking **which paper is loaded: 13 x 17 or A4**. The paper the scanner asked for is highlighted, and it is used
 automatically after 20 seconds if nobody clicks. "Don't print" cancels the film.
 Further films from the same scanner within 60 seconds use the same answer, so a CT
 series asks only once. Settings: `ask_paper`, `paper_choices`, `ask_timeout` and
